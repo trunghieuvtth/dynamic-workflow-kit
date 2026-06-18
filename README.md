@@ -28,6 +28,8 @@ Main exports:
 
 ```ts
 import {
+  WorkflowQuickConnect,
+  createDynamicWorkflowKitConfig,
   WorkflowBuilder,
   WorkflowRenderer,
   WorkflowEngine,
@@ -35,6 +37,76 @@ import {
   WorkflowPluginRegistry,
   defaultWorkflowPlugins,
   demoWorkflow,
+} from "@/modules/workflow";
+```
+
+## Fast Connect For Another App
+
+Use `WorkflowQuickConnect` when embedding the kit into another application and you want the default storage, plugins, agent, and runtime wiring to be handled for you.
+
+### Offline LocalStorage Mode
+
+```tsx
+import { WorkflowQuickConnect, demoWorkflow } from "@/modules/workflow";
+
+export default function WorkflowPage() {
+  return <WorkflowQuickConnect initialWorkflow={demoWorkflow} />;
+}
+```
+
+### REST API Storage Mode
+
+```tsx
+import {
+  WorkflowQuickConnect,
+  createDynamicWorkflowKitConfig,
+} from "@/modules/workflow";
+
+const workflowKitConfig = createDynamicWorkflowKitConfig({
+  apiBaseUrl: "/api/workflow",
+  workflowId: "default-approval-flow",
+  autoLoad: true,
+});
+
+export default function WorkflowPage() {
+  return <WorkflowQuickConnect config={workflowKitConfig} />;
+}
+```
+
+### Authenticated API Mode
+
+```tsx
+const workflowKitConfig = createDynamicWorkflowKitConfig({
+  http: {
+    baseUrl: "https://your-domain.com/api/workflow",
+    headers: async () => ({
+      Authorization: `Bearer ${await getAccessToken()}`,
+    }),
+  },
+  workflowId: "approval-flow",
+  autoLoad: true,
+});
+```
+
+Expected API endpoints:
+
+```text
+GET    /workflows
+GET    /workflows/:workflowId
+PUT    /workflows/:workflowId
+DELETE /workflows/:workflowId
+POST   /workflows/validate
+POST   /workflows/run
+```
+
+The module also exports lower-level adapters:
+
+```ts
+import {
+  ApiWorkflowStorage,
+  LocalWorkflowStorage,
+  LocalWorkflowRuntime,
+  createWorkflowApiClient,
 } from "@/modules/workflow";
 ```
 
@@ -56,6 +128,18 @@ export default function WorkflowPage() {
     />
   );
 }
+```
+
+`WorkflowBuilder` can also receive these integration props directly:
+
+```tsx
+<WorkflowBuilder
+  storage={new ApiWorkflowStorage({ baseUrl: "/api/workflow" })}
+  runtimeAdapter={new LocalWorkflowRuntime()}
+  agentAdapter={agentAdapter}
+  workflowId="approval-flow"
+  autoLoad
+/>
 ```
 
 ## Create A New Node Plugin
@@ -140,13 +224,28 @@ The toolbar supports:
 
 ## WorkflowAgent
 
-The current agent is rule-based and offline. It supports:
+The default agent is rule-based and offline. It supports:
 
 - Generate a Vietnamese approval workflow from a prompt
 - Explain workflow JSON in Vietnamese
 - Suggest logic fixes using `WorkflowValidator`
 
-Future adapters can implement the same interface:
+For a real LLM, use an OpenAI-compatible endpoint through your backend proxy or a local LLM gateway:
+
+```tsx
+import { createDynamicWorkflowKitConfig } from "@/modules/workflow";
+
+const workflowKitConfig = createDynamicWorkflowKitConfig({
+  llm: {
+    endpoint: "/api/ai/workflow-agent",
+    model: "gpt-4.1-mini",
+  },
+});
+```
+
+Do not put provider API keys directly in browser code. Put them behind your backend endpoint, then let the kit call that endpoint.
+
+Adapters implement the same interface:
 
 ```ts
 export interface WorkflowAgentAdapter {
@@ -156,5 +255,16 @@ export interface WorkflowAgentAdapter {
 }
 ```
 
-This makes it straightforward to swap in OpenAI, a local LLM, or a backend orchestration service later.
+This makes it straightforward to swap in OpenAI, a local LLM, or a backend orchestration service.
 
+## Condition Syntax
+
+The condition evaluator is safe and does not use `eval`. Supported examples:
+
+```text
+approvalResult == 'approved'
+amount >= 1000000 and department == 'finance'
+status in allowedStatuses
+tags contains 'urgent'
+exists(profile.email)
+```

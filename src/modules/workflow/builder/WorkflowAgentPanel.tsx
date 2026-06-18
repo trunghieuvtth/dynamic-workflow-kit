@@ -1,18 +1,20 @@
 import { useState } from "react";
+import type { WorkflowAgentAdapter } from "../types/agent";
 import type { WorkflowDefinition } from "../types/workflow";
 import { WorkflowAgent } from "../agents/WorkflowAgent";
 
 interface WorkflowAgentPanelProps {
   workflow: WorkflowDefinition;
+  agentAdapter?: WorkflowAgentAdapter;
   onApplyWorkflow: (workflow: WorkflowDefinition) => void;
 }
 
 const defaultPrompt = "Tạo quy trình tiếp nhận hồ sơ, chuyên viên xử lý, lãnh đạo phê duyệt. Nếu đồng ý thì ban hành văn bản. Nếu sai thì trả về chuyên viên bổ sung rồi trình lại.";
 
-export function WorkflowAgentPanel({ workflow, onApplyWorkflow }: WorkflowAgentPanelProps) {
+export function WorkflowAgentPanel({ workflow, agentAdapter, onApplyWorkflow }: WorkflowAgentPanelProps) {
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [output, setOutput] = useState<string[]>([]);
-  const agent = new WorkflowAgent();
+  const agent = agentAdapter ?? new WorkflowAgent();
 
   return (
     <div className="dwk-agent-panel">
@@ -63,4 +65,3 @@ export function WorkflowAgentPanel({ workflow, onApplyWorkflow }: WorkflowAgentP
     </div>
   );
 }
-

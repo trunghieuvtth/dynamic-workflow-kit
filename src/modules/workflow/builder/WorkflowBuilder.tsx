@@ -1,11 +1,14 @@
 import { ReactFlowProvider } from "@xyflow/react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { WorkflowAgentAdapter } from "../types/agent";
+import type { WorkflowRuntimeAdapter, WorkflowStorageAdapter } from "../types/connector";
 import type { WorkflowNodePlugin } from "../types/plugin";
 import type { WorkflowDefinition, WorkflowEdge, WorkflowNode } from "../types/workflow";
 import { WorkflowEngine } from "../core/WorkflowEngine";
 import { WorkflowPluginRegistry } from "../core/WorkflowPluginRegistry";
 import { WorkflowValidator } from "../core/WorkflowValidator";
 import { WORKFLOW_STORAGE_KEY, makeEmptyWorkflow, nowIso } from "../core/workflowUtils";
+import { LocalWorkflowStorage } from "../connectors/LocalWorkflowStorage";
 import { defaultWorkflowPlugins } from "../plugins/defaultPlugins";
 import { EdgeConfigPanel } from "./EdgeConfigPanel";
 import { NodeConfigPanel } from "./NodeConfigPanel";
@@ -25,8 +28,14 @@ export interface WorkflowBuilderProps {
   showToolbar?: boolean;
   showSidebar?: boolean;
   showConfigPanel?: boolean;
+  storage?: WorkflowStorageAdapter;
+  runtimeAdapter?: WorkflowRuntimeAdapter;
+  agentAdapter?: WorkflowAgentAdapter;
+  workflowId?: string;
+  autoLoad?: boolean;
   onSave?: (workflow: WorkflowDefinition) => void;
   onChange?: (workflow: WorkflowDefinition) => void;
+  onError?: (error: Error) => void;
   onRun?: (workflow: WorkflowDefinition) => void;
 }
 
@@ -37,12 +46,19 @@ export function WorkflowBuilder({
   showToolbar = true,
   showSidebar = true,
   showConfigPanel = true,
+  storage,
+  runtimeAdapter,
+  agentAdapter,
+  workflowId,
+  autoLoad = false,
   onSave,
   onChange,
+  onError,
   onRun,
 }: WorkflowBuilderProps) {
   const [workflow, setWorkflow] = useState<WorkflowDefinition>(() => initialWorkflow ?? makeEmptyWorkflow("Dynamic Workflow"));
   const registry = useMemo(() => new WorkflowPluginRegistry(plugins), [plugins]);
+  const storageAdapter = useMemo(() => storage ?? new LocalWorkflowStorage(WORKFLOW_STORAGE_KEY), [storage]);
   const {
     activePanel,
     runState,
@@ -56,41 +72,61 @@ export function WorkflowBuilder({
     setValidation,
   } = useWorkflowBuilderStore();
 
+  const updateWorkflow = useCallback((nextWorkflow: WorkflowDefinition) => {
+    setWorkflow({ ...nextWorkflow, updatedAt: nowIso() });
+  }, []);
+
+  useEffect(() => {
+    if (!autoLoad) {
+      return;
+    }
+    storageAdapter
+      .load(workflowId)
+      .then((loadedWorkflow) => {
+        if (loadedWorkflow) {
+          updateWorkflow(loadedWorkflow);
+        }
+      })
+      .catch((error: unknown) => {
+        onError?.(error instanceof Error ? error : new Error("Failed to auto-load workflow."));
+      });
+  }, [autoLoad, onError, storageAdapter, updateWorkflow, workflowId]);
+
   useEffect(() => {
     onChange?.(workflow);
   }, [onChange, workflow]);
 
-  const updateWorkflow = (nextWorkflow: WorkflowDefinition) => {
-    setWorkflow({ ...nextWorkflow, updatedAt: nowIso() });
-  };
-
   const selectedNode = workflow.nodes.find((node) => node.id === selectedNodeId);
   const selectedEdge = workflow.edges.find((edge) => edge.id === selectedEdgeId);
 
-  const validateWorkflow = () => {
-    const result = new WorkflowValidator(registry).validate(workflow);
+  const validateWorkflow = async () => {
+    const result = runtimeAdapter?.validate ? await runtimeAdapter.validate(workflow) : new WorkflowValidator(registry).validate(workflow);
     setValidation(result);
     return result;
   };
 
-  const saveWorkflow = () => {
-    localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(workflow));
-    onSave?.(workflow);
+  const saveWorkflow = async () => {
+    try {
+      await storageAdapter.save(workflow);
+      onSave?.(workflow);
+    } catch (error) {
+      onError?.(error instanceof Error ? error : new Error("Failed to save workflow."));
+    }
   };
 
-  const loadWorkflow = () => {
-    const raw = localStorage.getItem(WORKFLOW_STORAGE_KEY);
-    if (!raw) {
-      return;
-    }
+  const loadWorkflow = async () => {
     try {
-      updateWorkflow(JSON.parse(raw) as WorkflowDefinition);
-    } catch {
+      const loadedWorkflow = await storageAdapter.load(workflowId);
+      if (loadedWorkflow) {
+        updateWorkflow(loadedWorkflow);
+      }
+    } catch (error) {
       setValidation({
         valid: false,
-        errors: [{ code: "LOCALSTORAGE_PARSE", message: "Saved workflow JSON cannot be parsed." }],
+        errors: [{ code: "WORKFLOW_LOAD", message: error instanceof Error ? error.message : "Workflow could not be loaded." }],
         warnings: [],
       });
+      onError?.(error instanceof Error ? error : new Error("Failed to load workflow."));
     }
   };
 
@@ -117,8 +153,15 @@ export function WorkflowBuilder({
   };
 
   const startRun = () => {
-    validateWorkflow();
-    setRunState(new WorkflowEngine(workflow).start());
+    void validateWorkflow();
+    if (runtimeAdapter?.run) {
+      runtimeAdapter
+        .run(workflow)
+        .then(setRunState)
+        .catch((error: unknown) => onError?.(error instanceof Error ? error : new Error("Failed to run workflow.")));
+    } else {
+      setRunState(new WorkflowEngine(workflow).start());
+    }
     onRun?.(workflow);
   };
 
@@ -137,9 +180,9 @@ export function WorkflowBuilder({
             workflow={workflow}
             validation={validation}
             showAgent
-            onSave={saveWorkflow}
-            onLoad={loadWorkflow}
-            onValidate={validateWorkflow}
+            onSave={() => void saveWorkflow()}
+            onLoad={() => void loadWorkflow()}
+            onValidate={() => void validateWorkflow()}
             onRun={startRun}
             onImport={updateWorkflow}
             onOpenAgent={() => setActivePanel("agent")}
@@ -171,7 +214,7 @@ export function WorkflowBuilder({
                 <NodeConfigPanel workflow={workflow} node={selectedNode} registry={registry} readonly={readonly} onChange={updateNode} onDelete={deleteNode} />
               ) : null}
               {activePanel === "run" ? <WorkflowRunPanel workflow={workflow} runState={runState} onStart={startRun} onStep={stepRun} /> : null}
-              {activePanel === "agent" ? <WorkflowAgentPanel workflow={workflow} onApplyWorkflow={updateWorkflow} /> : null}
+              {activePanel === "agent" ? <WorkflowAgentPanel workflow={workflow} agentAdapter={agentAdapter} onApplyWorkflow={updateWorkflow} /> : null}
             </aside>
           ) : null}
         </main>
@@ -185,4 +228,3 @@ export function WorkflowBuilder({
     </ReactFlowProvider>
   );
 }
-
